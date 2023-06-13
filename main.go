@@ -1,9 +1,9 @@
-package own
+package s3
 
 import (
-	ahoy_targets "gitlab.com/hidothealth/platform/ahoy/src/target"
+	zen_targets "github.com/zen-io/zen-core/target"
 )
 
-var KnownTargets = ahoy_targets.TargetCreatorMap{
-	"sh_script": ShScriptConfig{},
+var KnownTargets = zen_targets.TargetCreatorMap{
+	"s3_file": S3FileConfig{},
 }
