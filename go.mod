@@ -33,6 +33,7 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/tiagoposse/go-sync-types v0.0.0-20230606060517-e7839c4bca50 // indirect
 	github.com/tiagoposse/go-tasklist-out v0.0.0-20230612172535-e54b6ceb9584 // indirect
+	github.com/zen-io/zen-target-archiving v0.0.0-20230630121353-2d5d712df8f7 // indirect
 	golang.org/x/crypto v0.9.0 // indirect
 	golang.org/x/exp v0.0.0-20230522175609-2e198f4a06a1 // indirect
 	golang.org/x/sys v0.8.0 // indirect

@@ -1,15 +1,15 @@
 package s3
 
 import (
-	"archive/zip"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
+	environs "github.com/zen-io/zen-core/environments"
 	zen_targets "github.com/zen-io/zen-core/target"
+	"github.com/zen-io/zen-core/utils"
+	archives "github.com/zen-io/zen-target-archiving"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -17,22 +17,59 @@ import (
 )
 
 type S3FileConfig struct {
-	zen_targets.BaseFields   `mapstructure:",squash"`
-	zen_targets.DeployFields `mapstructure:",squash"`
-	Srcs                     []string `mapstructure:"srcs"`
-	Bucket                   string   `mapstructure:"bucket"`
-	BucketKey                string   `mapstructure:"bucket_key"`
+	Name         string                           `mapstructure:"name" desc:"Name for the target"`
+	Description  string                           `mapstructure:"desc" desc:"Target description"`
+	Labels       []string                         `mapstructure:"labels" desc:"Labels to apply to the targets"` //
+	Deps         []string                         `mapstructure:"deps" desc:"Build dependencies"`
+	PassEnv      []string                         `mapstructure:"pass_env" desc:"List of environment variable names that will be passed from the OS environment, they are part of the target hash"`
+	SecretEnv    []string                         `mapstructure:"secret_env" desc:"List of environment variable names that will be passed from the OS environment, they are not used to calculate the target hash"`
+	Env          map[string]string                `mapstructure:"env" desc:"Key-Value map of static environment variables to be used"`
+	Tools        map[string]string                `mapstructure:"tools" desc:"Key-Value map of tools to include when executing this target. Values can be references"`
+	Visibility   []string                         `mapstructure:"visibility" desc:"List of visibility for this target"`
+	Environments map[string]*environs.Environment `mapstructure:"environments" desc:"Deployment Environments"`
+
+	Srcs      []string `mapstructure:"srcs"`
+	Zip       *string  `mapstructure:"zip"`
+	Bucket    string   `mapstructure:"bucket"`
+	BucketKey string   `mapstructure:"bucket_key"`
 }
 
-func (fc S3FileConfig) GetTargets(_ *zen_targets.TargetConfigContext) ([]*zen_targets.Target, error) {
+func (fc S3FileConfig) GetTargets(tcc *zen_targets.TargetConfigContext) ([]*zen_targets.Target, error) {
 	out := filepath.Base(fc.BucketKey)
 	srcs := map[string][]string{
-		"_srcs": {},
+		"zip": {},
 	}
 
-	srcs["_srcs"] = append(srcs["_srcs"], fc.Srcs...)
+	steps := []*zen_targets.Target{}
+	if len(fc.Srcs) != 0 {
+		acName := fmt.Sprintf("%s_archive", fc.Name)
 
-	steps := []*zen_targets.Target{
+		ac, err := archives.ArchiveConfig{
+			Name:       acName,
+			Out:        "archive.zip",
+			Type:       "zip",
+			Srcs:       fc.Srcs,
+			Labels:     fc.Labels,
+			Deps:       fc.Deps,
+			Visibility: []string{fc.Name},
+			PassEnv:    fc.PassEnv,
+			SecretEnv:  fc.SecretEnv,
+			Env:        fc.Env,
+		}.GetTargets(tcc)
+		if err != nil {
+			return nil, err
+		}
+
+		steps = append(steps, ac...)
+		srcs["zip"] = []string{fmt.Sprintf(":%s", acName)}
+		fc.Deps = append(fc.Deps, fmt.Sprintf(":%s", acName))
+	} else if fc.Zip != nil {
+		srcs["zip"] = []string{*fc.Zip}
+	} else {
+		return nil, fmt.Errorf("provide either a Zip or Srcs")
+	}
+
+	steps = append(steps,
 		zen_targets.NewTarget(
 			fc.Name,
 			zen_targets.WithOuts([]string{out}),
@@ -41,50 +78,7 @@ func (fc S3FileConfig) GetTargets(_ *zen_targets.TargetConfigContext) ([]*zen_ta
 			zen_targets.WithTargetScript("build", &zen_targets.TargetScript{
 				Deps: fc.Deps,
 				Run: func(target *zen_targets.Target, runCtx *zen_targets.RuntimeContext) error {
-					var archive *os.File
-					if a, err := os.Create(filepath.Join(target.Cwd, target.Outs[0])); err != nil {
-						return nil
-					} else {
-						archive = a
-						defer archive.Close()
-					}
-
-					zipWriter := zip.NewWriter(archive)
-
-					for _, src := range target.Srcs["_srcs"] {
-						if f1, err := os.Open(src); err != nil {
-							return nil
-						} else if w1, err := zipWriter.Create(src); err != nil {
-							return err
-						} else if _, err := io.Copy(w1, f1); err != nil {
-							return err
-						} else {
-							f1.Close()
-						}
-					}
-
-					for _, src := range target.Srcs["_deps"] {
-						parts := strings.Split(src, "/")
-						var to string
-						if len(parts) > 1 {
-							to = strings.Join(parts[1:], "/")
-						} else {
-							to = src
-						}
-						if f1, err := os.Open(src); err != nil {
-							return err
-						} else if w1, err := zipWriter.Create(to); err != nil {
-							return err
-						} else if _, err := io.Copy(w1, f1); err != nil {
-							return err
-						} else {
-							f1.Close()
-						}
-					}
-
-					zipWriter.Close()
-
-					return nil
+					return utils.Copy(target.Srcs["zip"][0], filepath.Join(target.Cwd, target.Outs[0]))
 				},
 			}),
 
@@ -93,8 +87,8 @@ func (fc S3FileConfig) GetTargets(_ *zen_targets.TargetConfigContext) ([]*zen_ta
 					target.SetStatus("Uploading to s3 (%s)", target.Qn())
 					if !runCtx.DryRun {
 						var file *os.File
-						if f, err := os.Open(filepath.Join(target.Cwd, target.Outs[0])); err != nil {
-							return fmt.Errorf("opening src %s: %w", filepath.Join(target.Cwd, target.Outs[0]), err)
+						if f, err := os.Open(target.Outs[0]); err != nil {
+							return fmt.Errorf("opening src %s: %w", target.Outs[0], err)
 						} else {
 							file = f
 							defer file.Close()
@@ -105,7 +99,7 @@ func (fc S3FileConfig) GetTargets(_ *zen_targets.TargetConfigContext) ([]*zen_ta
 							if val, ok := target.EnvVars()["AWS_S3_ENDPOINT"]; ok {
 								endpoint = val
 							} else {
-								endpoint = "s3.eu-central-1.amazonaws.com"
+								endpoint = "https://s3.eu-central-1.amazonaws.com"
 							}
 							if service == s3.ServiceID && region == "eu-central-1" {
 								return aws.Endpoint{
@@ -188,7 +182,7 @@ func (fc S3FileConfig) GetTargets(_ *zen_targets.TargetConfigContext) ([]*zen_ta
 				},
 			}),
 		),
-	}
+	)
 
 	return steps, nil
 }
